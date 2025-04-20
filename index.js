@@ -68,7 +68,8 @@ app.post('/webhook', async (req, res) => {
         continue;
       }
 
-      let tokenAddress = event.tokenMint || (event.accountData?.[0]?.tokenBalanceChanges?.[0]?.mint && event.accountData?.[0]?.tokenBalanceChanges?.[0]?.mint.length === 44 ? event.accountData?.[0]?.tokenBalanceChanges?.[0]?.mint : null);
+      let tokenAddress = event.tokenMint || (event.accountData?.[0]?.tokenBalanceChanges?.[0]?.mint && [44, 45].includes(event.accountData?.[0]?.tokenBalanceChanges?.[0]?.mint.length) ? event.accountData?.[0]?.tokenBalanceChanges?.[0]?.mint : null);
+      console.log('Token mint length check:', event.accountData?.[0]?.tokenBalanceChanges?.[0]?.mint?.length);
       console.log('Extracted token address:', tokenAddress);
 
       if (!tokenAddress) {
@@ -82,7 +83,10 @@ app.post('/webhook', async (req, res) => {
         continue;
       }
 
+      console.log('Calling extractTokenInfo for:', tokenAddress);
       const tokenData = await extractTokenInfo(event);
+      console.log('extractTokenInfo result:', tokenData);
+
       if (!tokenData) {
         console.log('No valid token data, skipping:', tokenAddress);
         if (!lastFailedToken || lastFailedToken !== tokenAddress) {
@@ -97,17 +101,16 @@ app.post('/webhook', async (req, res) => {
       console.log('Token data:', tokenData);
 
       const bypassFilters = process.env.BYPASS_FILTERS === 'true';
+      console.log('Bypass Filters:', bypassFilters, 'Filters:', filters);
       if (bypassFilters || checkAgainstFilters(tokenData, filters)) {
-        console.log('Token passed filters, sending alert:', tokenData);
+        console.log('Alert triggered for token:', tokenData.address);
         sendTokenAlert(chatId, tokenData);
         await delay(5000); // 5-second delay
         if (process.env.AUTO_SNIPE === 'true') {
           await autoSnipeToken(tokenData.address);
         }
       } else {
-        console.log('Token did not pass filters:', tokenAddress);
-        bot.sendMessage(chatId, `ℹ️ Token ${tokenAddress} did not pass filters`);
-        await delay(5000); // 5-second delay
+        console.log('Alert skipped, token did not pass filters:', tokenData.address);
       }
     }
 

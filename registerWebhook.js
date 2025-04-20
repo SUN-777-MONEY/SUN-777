@@ -20,6 +20,7 @@ const registerWebhook = async () => {
 
     // Register Helius Webhook
     if (HELIUS_API_KEY) {
+      console.log("HELIUS_API_KEY value:", HELIUS_API_KEY); // Debug API key
       console.log("Attempting to register Helius webhook with URL:", `${WEBHOOK_URL}/webhook`);
       const heliusPayload = { webhookUrl: `${WEBHOOK_URL}/webhook`, webhookType: "EVENTS" };
       const heliusResponse = await axios.post(
@@ -28,13 +29,13 @@ const registerWebhook = async () => {
         {
           headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${HELIUS_API_KEY}` // Direct API key without extra encoding
+            "Authorization": `Bearer ${HELIUS_API_KEY}` // Direct API key
           }
         }
       );
       console.log("Helius webhook response:", heliusResponse.data);
     } else {
-      console.log("HELIUS_API_KEY not found, skipping Helius webhook registration");
+      console.log("HELIUS_API_KEY not found or empty, skipping Helius webhook registration");
     }
   } catch (error) {
     console.error("Failed to register webhook:", error.response?.data || error.message);

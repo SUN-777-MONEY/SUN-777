@@ -10,7 +10,7 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const chatId = process.env.TELEGRAM_CHAT_ID || '-1002511600127';
-const webhookBaseUrl = process.env.WEBHOOK_URL?.replace(/\/$/, ''); // Remove trailing slash if any
+const webhookBaseUrl = process.env.WEBHOOK_URL?.replace(/\/$/, '');
 const connection = new Connection(`https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`, { commitment: 'confirmed' });
 
 if (!token || !webhookBaseUrl || !process.env.HELIUS_API_KEY || !process.env.PRIVATE_KEY) {
@@ -18,21 +18,17 @@ if (!token || !webhookBaseUrl || !process.env.HELIUS_API_KEY || !process.env.PRI
   process.exit(1);
 }
 
-// Ensure PUMP_FUN_PROGRAM is globally defined
 const PUMP_FUN_PROGRAM = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
 console.log('PUMP_FUN_PROGRAM defined:', PUMP_FUN_PROGRAM.toString());
 
-// Configure Telegram Bot with retry mechanism
 const bot = new TelegramBot(token, { polling: false, request: { retryAfter: 21 } });
 
 app.use(express.json());
 
-// Set Telegram webhook
 bot.setWebHook(`${webhookBaseUrl}/bot${token}`).then(() => {
   console.log('Webhook set:', bot.getWebHookInfo());
 });
 
-// In-memory storage
 let filters = {
   liquidity: { min: 4000, max: 25000 },
   poolSupply: { min: 60, max: 95 },
@@ -43,88 +39,115 @@ let filters = {
 };
 let lastTokenData = null;
 let userStates = {};
-let lastFailedToken = null; // Track last failed token to avoid spam
+let lastFailedToken = null;
+let eventCounter = 0;
+let lastReset = Date.now();
 
-// Function to delay execution
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// Helius Webhook Endpoint
 app.post('/webhook', async (req, res) => {
   try {
+    const now = Date.now();
+    if (now - lastReset > 60000) {
+      eventCounter = 0;
+      lastReset = now;
+    }
+
+    if (eventCounter >= 5) {
+      console.log('Rate limit exceeded, skipping webhook');
+      return res.status(200).send('Rate limit exceeded');
+    }
+
+    eventCounter++;
+
     const events = req.body;
-    console.log('Webhook received, type:', events.type, 'data:', JSON.stringify(events, null, 2));
-    console.log('Number of events:', events.length);
+    console.log('Webhook received, events count:', events.length);
 
     if (!events || !Array.isArray(events) || events.length === 0) {
       console.log('No events in webhook');
       return res.status(400).send('No events received');
     }
 
+    let batchMessage = '';
     for (const event of events) {
-      console.log('Processing event (detailed):', JSON.stringify(event, null, 2));
-      console.log('Program ID from event:', event.programId);
-      console.log('Accounts from event:', event.accounts);
-      if (event.type === 'CREATE' || (event.accountData && event.accountData.some(acc => acc.tokenBalanceChanges && acc.tokenBalanceChanges.length > 0))) {
-        let tokenAddress = event.tokenMint || 
-                          event.accountData?.flatMap(acc => acc.tokenBalanceChanges?.map(change => change.mint)).filter(mint => mint && [44, 45].includes(mint.length))[0] || 
-                          event.accounts?.[0] || 
-                          event.signature;
-        console.log('Token mint length check:', event.accountData?.flatMap(acc => acc.tokenBalanceChanges?.map(change => change.mint?.length)));
-        console.log('Extracted token address:', tokenAddress);
+      console.log('Processing event:', JSON.stringify(event, null, 2));
 
-        if (!tokenAddress) {
-          console.log('No valid token address found, skipping:', JSON.stringify(event));
+      if (event.type !== 'TOKEN_MINT') {
+        console.log('Skipping non-TOKEN_MINT event:', event.type);
+        continue;
+      }
+
+      const isPumpFunEvent = event.programId === PUMP_FUN_PROGRAM.toString() ||
+                            event.accounts?.includes(PUMP_FUN_PROGRAM.toString());
+      if (!isPumpFunEvent) {
+        console.log('Skipping non-Pump.fun event:', event.programId);
+        continue;
+      }
+
+      let tokenAddress = event.tokenMint ||
+                        event.accountData?.flatMap(acc => acc.tokenBalanceChanges?.map(change => change.mint))
+                          .filter(mint => mint && [44, 45].includes(mint.length))[0] ||
+                        event.accounts?.[0];
+
+      if (!tokenAddress || tokenAddress.length < 44 || tokenAddress.length > 45) {
+        console.log('Invalid token address, skipping:', tokenAddress);
+        continue;
+      }
+
+      try {
+        const mint = await getMint(connection, new PublicKey(tokenAddress));
+        if (mint.supply <= 1) {
+          console.log('Skipping NFT-like token:', tokenAddress);
           continue;
         }
+      } catch (error) {
+        console.error('Error checking mint supply:', error);
+        continue;
+      }
 
-        if (!PUMP_FUN_PROGRAM) {
-          console.warn('PUMP_FUN_PROGRAM is not defined, skipping Pump.fun check');
-          continue;
+      const tokenData = await extractTokenInfo(event);
+      if (!tokenData) {
+        console.log('No valid token data for:', tokenAddress);
+        if (!lastFailedToken || lastFailedToken !== tokenAddress) {
+          bot.sendMessage(chatId, `⚠️ Failed to fetch data for token: ${tokenAddress}`);
+          lastFailedToken = tokenAddress;
+          await delay(2000);
         }
+        continue;
+      }
 
-        const isPumpFunEvent = event.programId ? (event.programId === PUMP_FUN_PROGRAM.toString() || 
-                             event.accounts?.some(acc => acc === PUMP_FUN_PROGRAM.toString() || 
-                             acc.includes(PUMP_FUN_PROGRAM.toString().slice(0, 8)) || 
-                             event.programId?.includes(PUMP_FUN_PROGRAM.toString().slice(0, 8)))) : false;
-        console.log('Is Pump.fun event:', isPumpFunEvent);
-        if (isPumpFunEvent || !event.programId) {
-          const tokenData = await extractTokenInfo(event);
-          if (!tokenData) {
-            console.log('No valid token data for:', tokenAddress);
-            if (!lastFailedToken || lastFailedToken !== tokenAddress) {
-              bot.sendMessage(chatId, `⚠️ Failed to fetch data for token: ${tokenAddress}`);
-              lastFailedToken = tokenAddress;
-              await delay(2000); // 2-second delay to respect rate limit
-            }
-            continue;
-          }
+      lastTokenData = tokenData;
+      console.log('Token data:', tokenData);
 
-          lastTokenData = tokenData;
-          console.log('Token data:', tokenData);
+      const bypassFilters = process.env.BYPASS_FILTERS === 'true';
+      if (bypassFilters || checkAgainstFilters(tokenData, filters)) {
+        console.log('Token passed filters, adding to batch:', tokenData);
+        const message = `New Bonding Curve Meme Coin Alert!\n` +
+                        `Token Name: ${tokenData.name || 'N/A'}\n` +
+                        `Token Address: ${tokenData.address || 'N/A'}\n` +
+                        `Liquidity: ${tokenData.liquidity || 'N/A'}\n` +
+                        `Market Cap: ${tokenData.marketCap || 'N/A'}\n` +
+                        `Dev Holding: ${tokenData.devHolding || 'N/A'}%\n` +
+                        `Pool Supply: ${tokenData.poolSupply || 'N/A'}%\n` +
+                        `Launch Price: ${tokenData.launchPrice || 'N/A'} SOL\n` +
+                        `Mint Auth Revoked: ${tokenData.mintAuthRevoked ? 'Yes' : 'No'}\n` +
+                        `Freeze Auth Revoked: ${tokenData.freezeAuthRevoked ? 'Yes' : 'No'}\n` +
+                        `Chart: https://dexscreener.com/solana/${tokenData.address || ''}\n\n`;
+        batchMessage += message;
 
-          const bypassFilters = process.env.BYPASS_FILTERS === 'true';
-          if (bypassFilters || checkAgainstFilters(tokenData, filters)) {
-            console.log('Token passed filters, sending alert:', tokenData);
-            sendTokenAlert(chatId, tokenData);
-            await delay(2000); // Increased delay to 2 seconds
-            if (process.env.AUTO_SNIPE === 'true') {
-              await autoSnipeToken(tokenData.address);
-            }
-          } else {
-            console.log('Token did not pass filters:', tokenAddress);
-            bot.sendMessage(chatId, `ℹ️ Token ${tokenAddress} did not pass filters`);
-            await delay(2000); // Increased delay
-          }
-        } else {
-          console.log('Event not from Pump.fun, ignored. Program ID check failed:', {
-            eventProgramId: event.programId,
-            pumpFunProgram: PUMP_FUN_PROGRAM.toString(),
-            accounts: event.accounts
-          });
+        if (process.env.AUTO_SNIPE === 'true') {
+          await autoSnipeToken(tokenData.address);
         }
       } else {
-        console.log('Event type ignored (not CREATE or no token balance changes):', JSON.stringify(event));
+        console.log('Token did not pass filters:', tokenAddress);
+        bot.sendMessage(chatId, `ℹ️ Token ${tokenAddress} did not pass filters`);
+        await delay(2000);
       }
+    }
+
+    if (batchMessage) {
+      console.log('Sending batch message:', batchMessage);
+      await bot.sendMessage(chatId, batchMessage);
     }
 
     return res.status(200).send('OK');
@@ -134,11 +157,11 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// Test Webhook Endpoint
+// Rest of your code (test-webhook, sendTokenAlert, autoSnipeToken, bot logic, etc.) remains unchanged
 app.post('/test-webhook', async (req, res) => {
   try {
     const mockEvent = {
-      type: 'CREATE',
+      type: 'TOKEN_MINT',
       tokenMint: 'TEST_TOKEN_ADDRESS',
       programId: PUMP_FUN_PROGRAM.toString(),
       accounts: ['TEST_TOKEN_ADDRESS', PUMP_FUN_PROGRAM.toString()]
@@ -163,20 +186,19 @@ app.post('/test-webhook', async (req, res) => {
   }
 });
 
-// Updated sendTokenAlert with error handling
 async function sendTokenAlert(chatId, tokenData) {
   if (!tokenData) return;
-  const message = `New Token Alert!\n` +
+  const message = `New Bonding Curve Meme Coin Alert!\n` +
                   `Token Name: ${tokenData.name || 'N/A'}\n` +
                   `Token Address: ${tokenData.address || 'N/A'}\n` +
-                  `Liquidity: ${token.liquidity || 'N/A'}\n` +
-                  `Market Cap: ${token.marketCap || 'N/A'}\n` +
-                  `Dev Holding: ${token.devHolding || 'N/A'}%\n` +
-                  `Pool Supply: ${token.poolSupply || 'N/A'}%\n` +
-                  `Launch Price: ${token.launchPrice || 'N/A'} SOL\n` +
-                  `Mint Auth Revoked: ${token.mintAuthRevoked ? 'Yes' : 'No'}\n` +
-                  `Freeze Auth Revoked: ${token.freezeAuthRevoked ? 'Yes' : 'No'}\n` +
-                  `Chart: https://dexscreener.com/solana/${token.address || ''}`;
+                  `Liquidity: ${tokenData.liquidity || 'N/A'}\n` +
+                  `Market Cap: ${tokenData.marketCap || 'N/A'}\n` +
+                  `Dev Holding: ${tokenData.devHolding || 'N/A'}%\n` +
+                  `Pool Supply: ${tokenData.poolSupply || 'N/A'}%\n` +
+                  `Launch Price: ${tokenData.launchPrice || 'N/A'} SOL\n` +
+                  `Mint Auth Revoked: ${tokenData.mintAuthRevoked ? 'Yes' : 'No'}\n` +
+                  `Freeze Auth Revoked: ${tokenData.freezeAuthRevoked ? 'Yes' : 'No'}\n` +
+                  `Chart: https://dexscreener.com/solana/${tokenData.address || ''}`;
   console.log('Sending message:', message);
   try {
     await bot.sendMessage(chatId, message);
@@ -186,7 +208,6 @@ async function sendTokenAlert(chatId, tokenData) {
   }
 }
 
-// Auto-Snipe Logic (Placeholder)
 async function autoSnipeToken(tokenAddress) {
   try {
     const wallet = Keypair.fromSecretKey(Buffer.from(process.env.PRIVATE_KEY, 'base64'));
@@ -210,13 +231,11 @@ async function autoSnipeToken(tokenAddress) {
   }
 }
 
-// Telegram Bot Webhook Handler
 app.post(`/bot${token}`, (req, res) => {
   bot.processUpdate(req.body);
   res.sendStatus(200);
 });
 
-// Telegram Bot Logic
 bot.onText(/\/start/, (msg) => {
   bot.sendMessage(msg.chat.id, `👋 Welcome to @moongraphi_bot
 💰 Trade  |  🔐 Wallet
@@ -232,7 +251,6 @@ bot.onText(/\/start/, (msg) => {
   });
 });
 
-// Handle Button Callbacks
 bot.on('callback_query', (callbackQuery) => {
   const msg = callbackQuery.message;
   const data = callbackQuery.data;
@@ -388,7 +406,6 @@ bot.on('callback_query', (callbackQuery) => {
   }
 });
 
-// Handle user input for filter changes
 bot.on('message', (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
@@ -463,13 +480,10 @@ bot.on('message', (msg) => {
   }
 });
 
-// Start periodic token checking
 setInterval(() => checkNewTokens(bot, chatId, PUMP_FUN_PROGRAM, filters), 10000);
 
-// Health Check
 app.get('/', (req, res) => res.send('Bot running!'));
 
-// Start Server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   const heliusWebhookUrl = webhookBaseUrl.endsWith('/webhook') ? webhookBaseUrl : `${webhookBaseUrl}/webhook`;

@@ -13,11 +13,10 @@ const chatId = process.env.TELEGRAM_CHAT_ID || '-1002511600127';
 const webhookBaseUrl = process.env.WEBHOOK_URL?.replace(/\/$/, ''); // Remove trailing slash if any
 const connection = new Connection(`https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`, { commitment: 'confirmed' });
 
-if (!token || !webhookBaseUrl || !process.env.HELIUS_API_KEY) {
-  console.error('Missing environment variables. Required: TELEGRAM_BOT_TOKEN, WEBHOOK_URL, HELIUS_API_KEY');
+if (!token || !webhookBaseUrl || !process.env.HELIUS_API_KEY || !process.env.PRIVATE_KEY) {
+  console.error('Missing environment variables. Required: TELEGRAM_BOT_TOKEN, WEBHOOK_URL, HELIUS_API_KEY, PRIVATE_KEY');
   process.exit(1);
 }
-console.log('All required environment variables are set (PRIVATE_KEY is optional)');
 
 // Ensure PUMP_FUN_PROGRAM is globally defined
 const PUMP_FUN_PROGRAM = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
@@ -35,9 +34,9 @@ bot.setWebHook(`${webhookBaseUrl}/bot${token}`).then(() => {
 
 // In-memory storage
 let filters = {
-  liquidity: { min: 8000, max: 15000 },
+  liquidity: { min: 4000, max: 25000 },
   poolSupply: { min: 60, max: 95 },
-  devHolding: { min: 1, max: 10 },
+  devHolding: { min: 2, max: 10 },
   launchPrice: { min: 0.0000000022, max: 0.0000000058 },
   mintAuthRevoked: false,
   freezeAuthRevoked: false
@@ -53,7 +52,7 @@ const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 app.post('/webhook', async (req, res) => {
   try {
     const events = req.body;
-    console.log('Webhook received, data:', JSON.stringify(events, null, 2));
+    console.log('Webhook received, type:', events.type, 'data:', JSON.stringify(events, null, 2));
     console.log('Number of events:', events.length);
 
     if (!events || !Array.isArray(events) || events.length === 0) {
@@ -62,62 +61,75 @@ app.post('/webhook', async (req, res) => {
     }
 
     for (const event of events) {
-      console.log('Processing event:', JSON.stringify(event, null, 2));
-      if (event.type !== 'CREATE' || !event.accountData?.some(acc => acc.tokenBalanceChanges && acc.tokenBalanceChanges.length > 0)) {
-        console.log('Event ignored (not CREATE or no token balance changes):', JSON.stringify(event));
-        continue;
-      }
+      console.log('Processing event (detailed):', JSON.stringify(event, null, 2));
+      console.log('Program ID from event:', event.programId);
+      console.log('Accounts from event:', event.accounts);
+      if (event.type === 'CREATE' || (event.accountData && event.accountData.some(acc => acc.tokenBalanceChanges && acc.tokenBalanceChanges.length > 0))) {
+        let tokenAddress = event.tokenMint || 
+                          event.accountData?.flatMap(acc => acc.tokenBalanceChanges?.map(change => change.mint)).filter(mint => mint && [44, 45].includes(mint.length))[0] || 
+                          event.accounts?.[0] || 
+                          event.signature;
+        console.log('Token mint length check:', event.accountData?.flatMap(acc => acc.tokenBalanceChanges?.map(change => change.mint?.length)));
+        console.log('Extracted token address:', tokenAddress);
 
-      let tokenAddress = event.tokenMint || (event.accountData?.[0]?.tokenBalanceChanges?.[0]?.mint && [44, 45].includes(event.accountData?.[0]?.tokenBalanceChanges?.[0]?.mint.length) ? event.accountData?.[0]?.tokenBalanceChanges?.[0]?.mint : null);
-      console.log('Token mint length check:', event.accountData?.[0]?.tokenBalanceChanges?.[0]?.mint?.length);
-      console.log('Extracted token address:', tokenAddress);
-
-      if (!tokenAddress) {
-        console.log('No valid token address found, skipping:', JSON.stringify(event));
-        continue;
-      }
-
-      const isPumpFunEvent = event.programId && (event.programId === PUMP_FUN_PROGRAM.toString() || event.accounts?.some(acc => acc === PUMP_FUN_PROGRAM.toString()));
-      if (!isPumpFunEvent) {
-        console.log('Event not from Pump.fun, ignored:', JSON.stringify(event));
-        continue;
-      }
-
-      console.log('Calling extractTokenInfo for:', tokenAddress);
-      const tokenData = await extractTokenInfo(event);
-      console.log('extractTokenInfo result:', tokenData);
-
-      if (!tokenData) {
-        console.log('No valid token data, skipping:', tokenAddress);
-        if (!lastFailedToken || lastFailedToken !== tokenAddress) {
-          bot.sendMessage(chatId, `⚠️ Failed to fetch data for token: ${tokenAddress}`);
-          lastFailedToken = tokenAddress;
-          await delay(5000); // 5-second delay
+        if (!tokenAddress) {
+          console.log('No valid token address found, skipping:', JSON.stringify(event));
+          continue;
         }
-        continue;
-      }
 
-      lastTokenData = tokenData;
-      console.log('Token data:', tokenData);
+        if (!PUMP_FUN_PROGRAM) {
+          console.warn('PUMP_FUN_PROGRAM is not defined, skipping Pump.fun check');
+          continue;
+        }
 
-      const bypassFilters = process.env.BYPASS_FILTERS === 'true';
-      console.log('Bypass Filters:', bypassFilters, 'Filters:', filters);
-      if (bypassFilters || checkAgainstFilters(tokenData, filters)) {
-        console.log('Alert triggered for token:', tokenData.address);
-        sendTokenAlert(chatId, tokenData);
-        await delay(5000); // 5-second delay
-        if (process.env.AUTO_SNIPE === 'true') {
-          await autoSnipeToken(tokenData.address);
+        const isPumpFunEvent = event.programId ? (event.programId === PUMP_FUN_PROGRAM.toString() || 
+                             event.accounts?.some(acc => acc === PUMP_FUN_PROGRAM.toString() || 
+                             acc.includes(PUMP_FUN_PROGRAM.toString().slice(0, 8)) || 
+                             event.programId?.includes(PUMP_FUN_PROGRAM.toString().slice(0, 8)))) : false;
+        console.log('Is Pump.fun event:', isPumpFunEvent);
+        if (isPumpFunEvent || !event.programId) {
+          const tokenData = await extractTokenInfo(event);
+          if (!tokenData) {
+            console.log('No valid token data for:', tokenAddress);
+            if (!lastFailedToken || lastFailedToken !== tokenAddress) {
+              bot.sendMessage(chatId, `⚠️ Failed to fetch data for token: ${tokenAddress}`);
+              lastFailedToken = tokenAddress;
+              await delay(2000); // 2-second delay to respect rate limit
+            }
+            continue;
+          }
+
+          lastTokenData = tokenData;
+          console.log('Token data:', tokenData);
+
+          const bypassFilters = process.env.BYPASS_FILTERS === 'true';
+          if (bypassFilters || checkAgainstFilters(tokenData, filters)) {
+            console.log('Token passed filters, sending alert:', tokenData);
+            sendTokenAlert(chatId, tokenData);
+            await delay(2000); // Increased delay to 2 seconds
+            if (process.env.AUTO_SNIPE === 'true') {
+              await autoSnipeToken(tokenData.address);
+            }
+          } else {
+            console.log('Token did not pass filters:', tokenAddress);
+            bot.sendMessage(chatId, `ℹ️ Token ${tokenAddress} did not pass filters`);
+            await delay(2000); // Increased delay
+          }
+        } else {
+          console.log('Event not from Pump.fun, ignored. Program ID check failed:', {
+            eventProgramId: event.programId,
+            pumpFunProgram: PUMP_FUN_PROGRAM.toString(),
+            accounts: event.accounts
+          });
         }
       } else {
-        console.log('Alert skipped, token did not pass filters:', tokenData.address);
+        console.log('Event type ignored (not CREATE or no token balance changes):', JSON.stringify(event));
       }
     }
 
     return res.status(200).send('OK');
   } catch (error) {
     console.error('Webhook error:', error);
-    bot.sendMessage(chatId, `❌ Critical Error: ${error.message}`);
     return res.status(500).send('Internal Server Error');
   }
 });
@@ -157,14 +169,14 @@ async function sendTokenAlert(chatId, tokenData) {
   const message = `New Token Alert!\n` +
                   `Token Name: ${tokenData.name || 'N/A'}\n` +
                   `Token Address: ${tokenData.address || 'N/A'}\n` +
-                  `Liquidity: ${tokenData.liquidity || 'N/A'}\n` +
-                  `Market Cap: ${tokenData.marketCap || 'N/A'}\n` +
-                  `Dev Holding: ${tokenData.devHolding || 'N/A'}%\n` +
-                  `Pool Supply: ${tokenData.poolSupply || 'N/A'}%\n` +
-                  `Launch Price: ${tokenData.launchPrice || 'N/A'} SOL\n` +
-                  `Mint Auth Revoked: ${tokenData.mintAuthRevoked ? 'Yes' : 'No'}\n` +
-                  `Freeze Auth Revoked: ${tokenData.freezeAuthRevoked ? 'Yes' : 'No'}\n` +
-                  `Chart: https://dexscreener.com/solana/${tokenData.address || ''}`;
+                  `Liquidity: ${token.liquidity || 'N/A'}\n` +
+                  `Market Cap: ${token.marketCap || 'N/A'}\n` +
+                  `Dev Holding: ${token.devHolding || 'N/A'}%\n` +
+                  `Pool Supply: ${token.poolSupply || 'N/A'}%\n` +
+                  `Launch Price: ${token.launchPrice || 'N/A'} SOL\n` +
+                  `Mint Auth Revoked: ${token.mintAuthRevoked ? 'Yes' : 'No'}\n` +
+                  `Freeze Auth Revoked: ${token.freezeAuthRevoked ? 'Yes' : 'No'}\n` +
+                  `Chart: https://dexscreener.com/solana/${token.address || ''}`;
   console.log('Sending message:', message);
   try {
     await bot.sendMessage(chatId, message);
@@ -174,13 +186,8 @@ async function sendTokenAlert(chatId, tokenData) {
   }
 }
 
-// Auto-Snipe Logic (Optional)
+// Auto-Snipe Logic (Placeholder)
 async function autoSnipeToken(tokenAddress) {
-  if (!process.env.PRIVATE_KEY) {
-    console.log('PRIVATE_KEY not provided, skipping auto-snipe');
-    bot.sendMessage(chatId, '⚠️ Auto-snipe skipped: PRIVATE_KEY not set');
-    return;
-  }
   try {
     const wallet = Keypair.fromSecretKey(Buffer.from(process.env.PRIVATE_KEY, 'base64'));
     const amountToBuy = 0.1;
@@ -195,6 +202,7 @@ async function autoSnipeToken(tokenAddress) {
 
     const signature = await sendAndConfirmTransaction(connection, transaction, [wallet]);
     console.log(`Bought token ${tokenAddress} with signature ${signature}`);
+
     bot.sendMessage(chatId, `✅ Bought token ${tokenAddress} for ${amountToBuy} SOL! Signature: ${signature}`);
   } catch (error) {
     console.error('Error auto-sniping token:', error);
@@ -210,7 +218,10 @@ app.post(`/bot${token}`, (req, res) => {
 
 // Telegram Bot Logic
 bot.onText(/\/start/, (msg) => {
-  bot.sendMessage(msg.chat.id, `👋 Welcome to @moongraphi_bot\n💰 Trade  |  🔐 Wallet\n⚙️ Filters  |  📊 Portfolio\n❓ Help  |  🔄 Refresh`, {
+  bot.sendMessage(msg.chat.id, `👋 Welcome to @moongraphi_bot
+💰 Trade  |  🔐 Wallet
+⚙️ Filters  |  📊 Portfolio
+❓ Help  |  🔄 Refresh`, {
     reply_markup: {
       inline_keyboard: [
         [{ text: '💰 Trade', callback_data: 'trade' }, { text: '🔐 Wallet', callback_data: 'wallet' }],
@@ -230,20 +241,150 @@ bot.on('callback_query', (callbackQuery) => {
   bot.answerCallbackQuery(callbackQuery.id);
 
   switch (data) {
-    case 'trade': bot.sendMessage(chatId, '💰 Trade Menu\n🚀 Buy  |  📉 Sell', { reply_markup: { inline_keyboard: [[{ text: '🚀 Buy', callback_data: 'buy' }, { text: '📉 Sell', callback_data: 'sell' }], [{ text: '⬅️ Back', callback_data: 'back' }]] } }); break;
-    case 'wallet': bot.sendMessage(chatId, '🔐 Wallet Menu\n💳 Your wallet: Not connected yet.\n🔗 Connect Wallet', { reply_markup: { inline_keyboard: [[{ text: '🔗 Connect Wallet', callback_data: 'connect_wallet' }], [{ text: '⬅️ Back', callback_data: 'back' }]] } }); break;
-    case 'filters': bot.sendMessage(chatId, `⚙️ Filters Menu\nCurrent Filters:\nLiquidity: ${filters.liquidity.min}-${filters.liquidity.max}\nPool Supply: ${filters.poolSupply.min}-${filters.poolSupply.max}%\nDev Holding: ${filters.devHolding.min}-${filters.devHolding.max}%\nLaunch Price: ${filters.launchPrice.min}-${filters.launchPrice.max} SOL\nMint Auth Revoked: ${filters.mintAuthRevoked ? 'Yes' : 'No'}\nFreeze Auth Revoked: ${filters.freezeAuthRevoked ? 'Yes' : 'No'}`, { reply_markup: { inline_keyboard: [[{ text: '✏️ Edit Liquidity', callback_data: 'edit_liquidity' }], [{ text: '✏️ Edit Pool Supply', callback_data: 'edit_poolsupply' }], [{ text: '✏️ Edit Dev Holding', callback_data: 'edit_devholding' }], [{ text: '✏️ Edit Launch Price', callback_data: 'edit_launchprice' }], [{ text: '✏️ Edit Mint Auth', callback_data: 'edit_mintauth' }], [{ text: '✏️ Edit Freeze Auth', callback_data: 'edit_freezeauth' }], [{ text: '⬅️ Back', callback_data: 'back' }]] } }); break;
-    case 'portfolio': bot.sendMessage(chatId, '📊 Portfolio Menu\nYour portfolio is empty.\n💰 Start trading to build your portfolio!', { reply_markup: { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'back' }]] } }); break;
-    case 'help': bot.sendMessage(chatId, '❓ Help Menu\nThis bot helps you snipe meme coins on Pump.fun!\nCommands:\n/start - Start the bot\nFor support, contact @YourSupportUsername', { reply_markup: { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'back' }]] } }); break;
-    case 'refresh': bot.sendMessage(chatId, `🔄 Refreshing latest token data...\nLast Token: ${lastTokenData?.address || 'N/A'}`); break;
-    case 'back': bot.editMessageText(`👋 Welcome to @moongraphi_bot\n💰 Trade  |  🔐 Wallet\n⚙️ Filters  |  📊 Portfolio\n❓ Help  |  🔄 Refresh`, { chat_id: chatId, message_id: msg.message_id, reply_markup: { inline_keyboard: [[{ text: '💰 Trade', callback_data: 'trade' }, { text: '🔐 Wallet', callback_data: 'wallet' }], [{ text: '⚙️ Filters', callback_data: 'filters' }, { text: '📊 Portfolio', callback_data: 'portfolio' }], [{ text: '❓ Help', callback_data: 'help' }, { text: '🔄 Refresh', callback_data: 'refresh' }]] } }); break;
-    case 'edit_liquidity': userStates[chatId] = { editing: 'liquidity' }; bot.sendMessage(chatId, '✏️ Edit Liquidity\nPlease send the new range (e.g., "4000-25000" or "4000 25000")', { reply_markup: { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'filters' }]] } }); break;
-    case 'edit_poolsupply': userStates[chatId] = { editing: 'poolsupply' }; bot.sendMessage(chatId, '✏️ Edit Pool Supply\nPlease send the new range (e.g., "60-95" or "60 95")', { reply_markup: { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'filters' }]] } }); break;
-    case 'edit_devholding': userStates[chatId] = { editing: 'devholding' }; bot.sendMessage(chatId, '✏️ Edit Dev Holding\nPlease send the new range (e.g., "2-10" or "2 10")', { reply_markup: { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'filters' }]] } }); break;
-    case 'edit_launchprice': userStates[chatId] = { editing: 'launchprice' }; bot.sendMessage(chatId, '✏️ Edit Launch Price\nPlease send the new range (e.g., "0.0000000022-0.0000000058" or "0.0000000022 0.0000000058")', { reply_markup: { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'filters' }]] } }); break;
-    case 'edit_mintauth': userStates[chatId] = { editing: 'mintauth' }; bot.sendMessage(chatId, '✏️ Edit Mint Auth Revoked\nSend "Yes" or "No"', { reply_markup: { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'filters' }]] } }); break;
-    case 'edit_freezeauth': userStates[chatId] = { editing: 'freezeauth' }; bot.sendMessage(chatId, '✏️ Edit Freeze Auth Revoked\nSend "Yes" or "No"', { reply_markup: { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'filters' }]] } }); break;
-    default: bot.sendMessage(chatId, 'Unknown command. Please use the buttons');
+    case 'trade':
+      bot.sendMessage(chatId, '💰 Trade Menu\n🚀 Buy  |  📉 Sell', {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🚀 Buy', callback_data: 'buy' }, { text: '📉 Sell', callback_data: 'sell' }],
+            [{ text: '⬅️ Back', callback_data: 'back' }]
+          ]
+        }
+      });
+      break;
+
+    case 'wallet':
+      bot.sendMessage(chatId, '🔐 Wallet Menu\n💳 Your wallet: Not connected yet.\n🔗 Connect Wallet', {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔗 Connect Wallet', callback_data: 'connect_wallet' }],
+            [{ text: '⬅️ Back', callback_data: 'back' }]
+          ]
+        }
+      });
+      break;
+
+    case 'filters':
+      bot.sendMessage(chatId, `⚙️ Filters Menu\nCurrent Filters:\nLiquidity: ${filters.liquidity.min}-${filters.liquidity.max}\nPool Supply: ${filters.poolSupply.min}-${filters.poolSupply.max}%\nDev Holding: ${filters.devHolding.min}-${filters.devHolding.max}%\nLaunch Price: ${filters.launchPrice.min}-${filters.launchPrice.max} SOL\nMint Auth Revoked: ${filters.mintAuthRevoked ? 'Yes' : 'No'}\nFreeze Auth Revoked: ${filters.freezeAuthRevoked ? 'Yes' : 'No'}`, {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '✏️ Edit Liquidity', callback_data: 'edit_liquidity' }],
+            [{ text: '✏️ Edit Pool Supply', callback_data: 'edit_poolsupply' }],
+            [{ text: '✏️ Edit Dev Holding', callback_data: 'edit_devholding' }],
+            [{ text: '✏️ Edit Launch Price', callback_data: 'edit_launchprice' }],
+            [{ text: '✏️ Edit Mint Auth', callback_data: 'edit_mintauth' }],
+            [{ text: '✏️ Edit Freeze Auth', callback_data: 'edit_freezeauth' }],
+            [{ text: '⬅️ Back', callback_data: 'back' }]
+          ]
+        }
+      });
+      break;
+
+    case 'portfolio':
+      bot.sendMessage(chatId, '📊 Portfolio Menu\nYour portfolio is empty.\n💰 Start trading to build your portfolio!', {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '⬅️ Back', callback_data: 'back' }]
+          ]
+        }
+      });
+      break;
+
+    case 'help':
+      bot.sendMessage(chatId, '❓ Help Menu\nThis bot helps you snipe meme coins on Pump.fun!\nCommands:\n/start - Start the bot\nFor support, contact @YourSupportUsername', {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '⬅️ Back', callback_data: 'back' }]
+          ]
+        }
+      });
+      break;
+
+    case 'refresh':
+      bot.sendMessage(chatId, `🔄 Refreshing latest token data...\nLast Token: ${lastTokenData?.address || 'N/A'}`);
+      break;
+
+    case 'back':
+      bot.editMessageText(`👋 Welcome to @moongraphi_bot\n💰 Trade  |  🔐 Wallet\n⚙️ Filters  |  📊 Portfolio\n❓ Help  |  🔄 Refresh`, {
+        chat_id: chatId,
+        message_id: msg.message_id,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '💰 Trade', callback_data: 'trade' }, { text: '🔐 Wallet', callback_data: 'wallet' }],
+            [{ text: '⚙️ Filters', callback_data: 'filters' }, { text: '📊 Portfolio', callback_data: 'portfolio' }],
+            [{ text: '❓ Help', callback_data: 'help' }, { text: '🔄 Refresh', callback_data: 'refresh' }]
+          ]
+        }
+      });
+      break;
+
+    case 'edit_liquidity':
+      userStates[chatId] = { editing: 'liquidity' };
+      bot.sendMessage(chatId, '✏️ Edit Liquidity\nPlease send the new range (e.g., "4000-25000" or "4000 25000")', {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '⬅️ Back', callback_data: 'filters' }]
+          ]
+        }
+      });
+      break;
+
+    case 'edit_poolsupply':
+      userStates[chatId] = { editing: 'poolsupply' };
+      bot.sendMessage(chatId, '✏️ Edit Pool Supply\nPlease send the new range (e.g., "60-95" or "60 95")', {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '⬅️ Back', callback_data: 'filters' }]
+          ]
+        }
+      });
+      break;
+
+    case 'edit_devholding':
+      userStates[chatId] = { editing: 'devholding' };
+      bot.sendMessage(chatId, '✏️ Edit Dev Holding\nPlease send the new range (e.g., "2-10" or "2 10")', {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '⬅️ Back', callback_data: 'filters' }]
+          ]
+        }
+      });
+      break;
+
+    case 'edit_launchprice':
+      userStates[chatId] = { editing: 'launchprice' };
+      bot.sendMessage(chatId, '✏️ Edit Launch Price\nPlease send the new range (e.g., "0.0000000022-0.0000000058" or "0.0000000022 0.0000000058")', {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '⬅️ Back', callback_data: 'filters' }]
+          ]
+        }
+      });
+      break;
+
+    case 'edit_mintauth':
+      userStates[chatId] = { editing: 'mintauth' };
+      bot.sendMessage(chatId, '✏️ Edit Mint Auth Revoked\nSend "Yes" or "No"', {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '⬅️ Back', callback_data: 'filters' }]
+          ]
+        }
+      });
+      break;
+
+    case 'edit_freezeauth':
+      userStates[chatId] = { editing: 'freezeauth' };
+      bot.sendMessage(chatId, '✏️ Edit Freeze Auth Revoked\nSend "Yes" or "No"', {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '⬅️ Back', callback_data: 'filters' }]
+          ]
+        }
+      });
+      break;
+
+    default:
+      bot.sendMessage(chatId, 'Unknown command. Please use the buttons');
   }
 });
 

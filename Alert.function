@@ -1,0 +1,28 @@
+const axios = require('axios');
+
+async function checkNewTokens(bot, chatId, PUMP_FUN_PROGRAM, filters) {
+  try {
+    const response = await axios.get(
+      `https://api.helius.xyz/v0/addresses/${PUMP_FUN_PROGRAM.toBase58()}/transactions?api-key=${process.env.HELIUS_API_KEY}&limit=5`
+    );
+    const txs = response.data;
+
+    for (let tx of txs) {
+      if (tx.type === 'CREATE') {
+        const tokenInfo = await extractTokenInfo(tx);
+        if (!tokenInfo) continue;
+
+        const passed = checkAgainstFilters(tokenInfo, filters);
+        if (passed) {
+          const message = formatTokenMessage(tokenInfo);
+          bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+        }
+      }
+    }
+  } catch (err) {
+    console.error("Token check error:", err.message);
+  }
+}
+
+// Export for use in index.js
+module.exports = { checkNewTokens };

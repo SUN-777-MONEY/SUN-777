@@ -20,7 +20,7 @@ const registerWebhook = async () => {
 
     if (HELIUS_API_KEY) {
       console.log("Raw HELIUS_API_KEY value from env:", HELIUS_API_KEY);
-      console.log("Constructed Authorization header:", `Bearer ${HELIUS_API_KEY}`);
+      console.log("Attempting to register Helius webhook with URL:", `${WEBHOOK_URL}/webhook`);
       const heliusPayload = { webhookUrl: `${WEBHOOK_URL}/webhook`, webhookType: "EVENTS" };
       const heliusResponse = await axios.post(
         "https://api.helius.xyz/v1/webhooks",
@@ -28,7 +28,7 @@ const registerWebhook = async () => {
         {
           headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${HELIUS_API_KEY}`
+            "Authorization": "Bearer " + HELIUS_API_KEY // Manual concatenation
           }
         }
       );

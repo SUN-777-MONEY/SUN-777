@@ -7,7 +7,7 @@ const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 
 const registerWebhook = async () => {
   try {
-    console.log("Setting Telegram webhook with URL:", WEBHOOK_URL); // Debug log
+    console.log("Setting Telegram webhook with URL:", `${WEBHOOK_URL}/bot${BOT_TOKEN}`); // Debug log
     const telegramResponse = await axios.get(
       `https://api.telegram.org/bot${BOT_TOKEN}/setWebhook`,
       {
@@ -18,7 +18,7 @@ const registerWebhook = async () => {
     );
     console.log("Telegram webhook response:", telegramResponse.data);
 
-    // Optional: Register Helius Webhook
+    // Register Helius Webhook
     if (HELIUS_API_KEY) {
       console.log("Attempting to register Helius webhook with URL:", `${WEBHOOK_URL}/webhook`);
       const heliusPayload = { webhookUrl: `${WEBHOOK_URL}/webhook`, webhookType: "EVENTS" };
@@ -26,9 +26,9 @@ const registerWebhook = async () => {
         "https://api.helius.xyz/v1/webhooks",
         heliusPayload,
         {
-          headers: { 
+          headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${HELIUS_API_KEY}`
+            "Authorization": `Bearer ${HELIUS_API_KEY}` // Direct API key without extra encoding
           }
         }
       );

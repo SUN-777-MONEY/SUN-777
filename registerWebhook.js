@@ -20,7 +20,7 @@ const registerWebhook = async () => {
 
     // Register Helius Webhook
     if (HELIUS_API_KEY) {
-      console.log("HELIUS_API_KEY value:", HELIUS_API_KEY); // Debug API key
+      console.log("Raw HELIUS_API_KEY value from env:", HELIUS_API_KEY); // Extra debug
       console.log("Attempting to register Helius webhook with URL:", `${WEBHOOK_URL}/webhook`);
       const heliusPayload = { webhookUrl: `${WEBHOOK_URL}/webhook`, webhookType: "EVENTS" };
       const heliusResponse = await axios.post(

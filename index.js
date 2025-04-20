@@ -34,9 +34,9 @@ bot.setWebHook(`${webhookBaseUrl}/bot${token}`).then(() => {
 
 // In-memory storage
 let filters = {
-  liquidity: { min: 4000, max: 25000 },
+  liquidity: { min: 8000, max: 15000 },
   poolSupply: { min: 60, max: 95 },
-  devHolding: { min: 2, max: 10 },
+  devHolding: { min: 1, max: 10 },
   launchPrice: { min: 0.0000000022, max: 0.0000000058 },
   mintAuthRevoked: false,
   freezeAuthRevoked: false
@@ -62,70 +62,65 @@ app.post('/webhook', async (req, res) => {
 
     for (const event of events) {
       console.log('Processing event (detailed):', JSON.stringify(event, null, 2));
-      console.log('Program ID from event:', event.programId);
-      console.log('Accounts from event:', event.accounts);
-      if (event.type === 'CREATE' || (event.accountData && event.accountData.some(acc => acc.tokenBalanceChanges && acc.tokenBalanceChanges.length > 0))) {
-        let tokenAddress = event.tokenMint || event.accounts?.[0] || event.accountData?.[0]?.tokenBalanceChanges?.[0]?.mint || event.signature;
-        console.log('Extracted token address:', tokenAddress);
+      if (event.type !== 'CREATE' || !event.accountData?.some(acc => acc.tokenBalanceChanges && acc.tokenBalanceChanges.length > 0)) {
+        console.log('Event type ignored (not CREATE or no token balance changes):', JSON.stringify(event));
+        continue;
+      }
 
-        if (!tokenAddress) {
-          console.log('No token address found in event, trying to extract:', JSON.stringify(event));
-          continue;
-        }
+      let tokenAddress = event.tokenMint || (event.accountData?.[0]?.tokenBalanceChanges?.[0]?.mint && event.accountData?.[0]?.tokenBalanceChanges?.[0]?.mint.length === 44 ? event.accountData?.[0]?.tokenBalanceChanges?.[0]?.mint : null);
+      console.log('Extracted token address:', tokenAddress);
 
-        if (!PUMP_FUN_PROGRAM) {
-          console.warn('PUMP_FUN_PROGRAM is not defined, skipping Pump.fun check');
-          continue;
-        }
+      if (!tokenAddress) {
+        console.log('No valid token address found in event, skipping:', JSON.stringify(event));
+        continue;
+      }
 
-        const isPumpFunEvent = event.programId ? (event.programId === PUMP_FUN_PROGRAM.toString() || 
+      if (!PUMP_FUN_PROGRAM) {
+        console.warn('PUMP_FUN_PROGRAM is not defined, skipping Pump.fun check');
+        continue;
+      }
+
+      const isPumpFunEvent = event.programId && (event.programId === PUMP_FUN_PROGRAM.toString() || 
                              event.accounts?.some(acc => acc === PUMP_FUN_PROGRAM.toString() || 
-                             acc.includes(PUMP_FUN_PROGRAM.toString().slice(0, 8)) || 
-                             event.programId?.includes(PUMP_FUN_PROGRAM.toString().slice(0, 8)))) : false;
-        console.log('Is Pump.fun event:', isPumpFunEvent);
-        if (isPumpFunEvent || !event.programId) {
-          const tokenData = await extractTokenInfo(event);
-          if (!tokenData) {
-            console.log('No valid token data for:', tokenAddress);
-            if (!lastFailedToken || lastFailedToken !== tokenAddress) {
-              bot.sendMessage(chatId, `⚠️ Failed to fetch data for token: ${tokenAddress}`);
-              lastFailedToken = tokenAddress;
-              await delay(2000); // 2-second delay to respect rate limit
-            }
-            continue;
-          }
+                             acc.includes(PUMP_FUN_PROGRAM.toString().slice(0, 8))));
+      if (!isPumpFunEvent) {
+        console.log('Event not from Pump.fun, ignored:', JSON.stringify(event));
+        continue;
+      }
 
-          lastTokenData = tokenData;
-          console.log('Token data:', tokenData);
+      const tokenData = await extractTokenInfo(event);
+      if (!tokenData) {
+        console.log('No valid token data for:', tokenAddress);
+        if (!lastFailedToken || lastFailedToken !== tokenAddress) {
+          bot.sendMessage(chatId, `⚠️ Failed to fetch data for token: ${tokenAddress}`);
+          lastFailedToken = tokenAddress;
+          await delay(5000); // 5-second delay
+        }
+        continue;
+      }
 
-          const bypassFilters = process.env.BYPASS_FILTERS === 'true';
-          if (bypassFilters || checkAgainstFilters(tokenData, filters)) {
-            console.log('Token passed filters, sending alert:', tokenData);
-            sendTokenAlert(chatId, tokenData);
-            await delay(2000); // Increased delay to 2 seconds
-            if (process.env.AUTO_SNIPE === 'true') {
-              await autoSnipeToken(tokenData.address);
-            }
-          } else {
-            console.log('Token did not pass filters:', tokenAddress);
-            bot.sendMessage(chatId, `ℹ️ Token ${tokenAddress} did not pass filters`);
-            await delay(2000); // Increased delay
-          }
-        } else {
-          console.log('Event not from Pump.fun, ignored. Program ID check failed:', {
-            eventProgramId: event.programId,
-            pumpFunProgram: PUMP_FUN_PROGRAM.toString(),
-            accounts: event.accounts
-          });
+      lastTokenData = tokenData;
+      console.log('Token data:', tokenData);
+
+      const bypassFilters = process.env.BYPASS_FILTERS === 'true';
+      if (bypassFilters || checkAgainstFilters(tokenData, filters)) {
+        console.log('Token passed filters, sending alert:', tokenData);
+        sendTokenAlert(chatId, tokenData);
+        await delay(5000); // 5-second delay
+        if (process.env.AUTO_SNIPE === 'true') {
+          await autoSnipeToken(tokenData.address);
         }
       } else {
-        console.log('Event type ignored (not CREATE or no token balance changes):', JSON.stringify(event));
+        console.log('Token did not pass filters:', tokenAddress);
+        bot.sendMessage(chatId, `ℹ️ Token ${tokenAddress} did not pass filters`);
+        await delay(5000); // 5-second delay
       }
     }
 
     return res.status(200).send('OK');
   } catch (error) {
     console.error('Webhook error:', error);
+    bot.sendMessage(chatId, `❌ Critical Error: ${error.message}`);
     return res.status(500).send('Internal Server Error');
   }
 });
@@ -165,14 +160,14 @@ async function sendTokenAlert(chatId, tokenData) {
   const message = `New Token Alert!\n` +
                   `Token Name: ${tokenData.name || 'N/A'}\n` +
                   `Token Address: ${tokenData.address || 'N/A'}\n` +
-                  `Liquidity: ${token.liquidity || 'N/A'}\n` +
-                  `Market Cap: ${token.marketCap || 'N/A'}\n` +
-                  `Dev Holding: ${token.devHolding || 'N/A'}%\n` +
-                  `Pool Supply: ${token.poolSupply || 'N/A'}%\n` +
-                  `Launch Price: ${token.launchPrice || 'N/A'} SOL\n` +
-                  `Mint Auth Revoked: ${token.mintAuthRevoked ? 'Yes' : 'No'}\n` +
-                  `Freeze Auth Revoked: ${token.freezeAuthRevoked ? 'Yes' : 'No'}\n` +
-                  `Chart: https://dexscreener.com/solana/${token.address || ''}`;
+                  `Liquidity: ${tokenData.liquidity || 'N/A'}\n` +
+                  `Market Cap: ${tokenData.marketCap || 'N/A'}\n` +
+                  `Dev Holding: ${tokenData.devHolding || 'N/A'}%\n` +
+                  `Pool Supply: ${tokenData.poolSupply || 'N/A'}%\n` +
+                  `Launch Price: ${tokenData.launchPrice || 'N/A'} SOL\n` +
+                  `Mint Auth Revoked: ${tokenData.mintAuthRevoked ? 'Yes' : 'No'}\n` +
+                  `Freeze Auth Revoked: ${tokenData.freezeAuthRevoked ? 'Yes' : 'No'}\n` +
+                  `Chart: https://dexscreener.com/solana/${tokenData.address || ''}`;
   console.log('Sending message:', message);
   try {
     await bot.sendMessage(chatId, message);

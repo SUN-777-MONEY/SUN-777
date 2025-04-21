@@ -21,6 +21,7 @@ try {
 // Function to reload the module at runtime if needed
 const reloadHelperModule = () => {
   try {
+    console.log('Attempting to reload Helper.function.js...');
     // Clear the module cache
     delete require.cache[require.resolve('./Helper.function')];
     // Reload the module
@@ -31,7 +32,7 @@ const reloadHelperModule = () => {
     console.log('Successfully reloaded Helper.function.js:', { extractTokenInfo, checkAgainstFilters, formatTokenMessage });
   } catch (error) {
     console.error('Failed to reload Helper.function.js:', error);
-    throw error;
+    throw new Error('Module reload error: Failed to reload Helper.function.js');
   }
 };
 
@@ -81,7 +82,11 @@ const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 app.post('/webhook', async (req, res) => {
   try {
     // Debug log to check module state at runtime
-    console.log('Checking module state in /webhook endpoint:', { extractTokenInfo, checkAgainstFilters, formatTokenMessage });
+    console.log('Checking module state in /webhook endpoint:', {
+      extractTokenInfo: typeof extractTokenInfo,
+      checkAgainstFilters: typeof checkAgainstFilters,
+      formatTokenMessage: typeof formatTokenMessage
+    });
 
     // Reload module if extractTokenInfo is undefined
     if (typeof extractTokenInfo !== 'function') {
@@ -89,9 +94,13 @@ app.post('/webhook', async (req, res) => {
       reloadHelperModule();
     }
 
-    // Ensure extractTokenInfo is defined after reload
+    // Final check after reload
     if (typeof extractTokenInfo !== 'function') {
-      console.error('extractTokenInfo is still not a function after reload. Current module state:', { extractTokenInfo, checkAgainstFilters, formatTokenMessage });
+      console.error('extractTokenInfo is still not a function after reload. Current module state:', {
+        extractTokenInfo: typeof extractTokenInfo,
+        checkAgainstFilters: typeof checkAgainstFilters,
+        formatTokenMessage: typeof formatTokenMessage
+      });
       throw new Error('Token check error: extractTokenInfo is not defined even after reload');
     }
 
@@ -198,7 +207,11 @@ app.post('/webhook', async (req, res) => {
 app.post('/test-webhook', async (req, res) => {
   try {
     // Debug log to check module state at runtime
-    console.log('Checking module state in /test-webhook endpoint:', { extractTokenInfo, checkAgainstFilters, formatTokenMessage });
+    console.log('Checking module state in /test-webhook endpoint:', {
+      extractTokenInfo: typeof extractTokenInfo,
+      checkAgainstFilters: typeof checkAgainstFilters,
+      formatTokenMessage: typeof formatTokenMessage
+    });
 
     // Reload module if extractTokenInfo is undefined
     if (typeof extractTokenInfo !== 'function') {
@@ -206,9 +219,13 @@ app.post('/test-webhook', async (req, res) => {
       reloadHelperModule();
     }
 
-    // Ensure extractTokenInfo is defined after reload
+    // Final check after reload
     if (typeof extractTokenInfo !== 'function') {
-      console.error('extractTokenInfo is still not a function after reload. Current module state:', { extractTokenInfo, checkAgainstFilters, formatTokenMessage });
+      console.error('extractTokenInfo is still not a function after reload. Current module state:', {
+        extractTokenInfo: typeof extractTokenInfo,
+        checkAgainstFilters: typeof checkAgainstFilters,
+        formatTokenMessage: typeof formatTokenMessage
+      });
       throw new Error('Token check error: extractTokenInfo is not defined even after reload');
     }
 
@@ -413,7 +430,7 @@ bot.on('callback_query', (callbackQuery) => {
 
     case 'edit_launchprice':
       userStates[chatId] = { editing: 'launchprice' };
-      bot.sendMessage(chatId, '✏️ Edit Launch Price\nPlease send the new range (e.g., "0. parallelism0000000022-0.0000000058" or "0.0000000022 0.0000000058")', {
+      bot.sendMessage(chatId, '✏️ Edit Launch Price\nPlease send the new range (e.g., "0.0000000022-0.0000000058" or "0.0000000022 0.0000000058")', {
         reply_markup: {
           inline_keyboard: [
             [{ text: '⬅️ Back', callback_data: 'filters' }]
@@ -523,14 +540,4 @@ bot.on('message', (msg) => {
   }
 });
 
-setInterval(() => checkNewTokens(bot, chatId, PUMP_FUN_PROGRAM, filters), 10000);
-
-app.get('/', (req, res) => res.send('Bot running!'));
-
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  const heliusWebhookUrl = webhookBaseUrl.endsWith('/webhook') ? webhookBaseUrl : `${webhookBaseUrl}/webhook`;
-  console.log('Helius Webhook URL:', heliusWebhookUrl);
-  console.log('Starting Helius webhook and periodic monitoring...');
-  bot.sendMessage(chatId, '🚀 Bot started! Waiting for Pump.fun token alerts...');
-});
+setInterval(() => checkNewTokens(bot, chatId, PUMP_F

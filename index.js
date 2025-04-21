@@ -103,7 +103,6 @@ app.post('/webhook', async (req, res) => {
       return res.status(400).send('No events received');
     }
 
-    let batchMessage = '';
     for (const event of events) {
       console.log('Processing event:', JSON.stringify(event, null, 2));
 
@@ -156,10 +155,9 @@ app.post('/webhook', async (req, res) => {
 
       const bypassFilters = process.env.BYPASS_FILTERS === 'true';
       if (bypassFilters || checkAgainstFilters(tokenData, filters)) {
-        console.log('Token passed filters, adding to batch:', tokenData);
+        console.log('Token passed filters, sending alert:', tokenData);
         const message = formatTokenMessage(tokenData);
-        batchMessage += message;
-
+        await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
         if (process.env.AUTO_SNIPE === 'true') {
           await autoSnipeToken(tokenData.address);
         }
@@ -168,11 +166,6 @@ app.post('/webhook', async (req, res) => {
         bot.sendMessage(chatId, `ℹ️ Token ${tokenAddress} did not pass filters`);
         await delay(2000);
       }
-    }
-
-    if (batchMessage) {
-      console.log('Sending batch message:', batchMessage);
-      await bot.sendMessage(chatId, batchMessage);
     }
 
     return res.status(200).send('OK');
@@ -208,7 +201,8 @@ app.post('/test-webhook', async (req, res) => {
 
     const tokenData = await extractTokenInfo(mockEvent);
     if (tokenData) {
-      sendTokenAlert(chatId, tokenData);
+      const message = formatTokenMessage(tokenData);
+      await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
       console.log('Test alert sent:', tokenData);
       bot.sendMessage(chatId, '✅ Test webhook successful!');
     } else {
@@ -222,19 +216,6 @@ app.post('/test-webhook', async (req, res) => {
     return res.status(500).send('Test webhook failed');
   }
 });
-
-async function sendTokenAlert(chatId, tokenData) {
-  if (!tokenData) return;
-  const { formatTokenMessage } = loadHelperModule(); // Dynamically load for this function as well
-  const message = formatTokenMessage(tokenData);
-  console.log('Sending message:', message);
-  try {
-    await bot.sendMessage(chatId, message);
-    console.log('Message sent successfully');
-  } catch (error) {
-    console.error('Failed to send message to Telegram:', error.message);
-  }
-}
 
 async function autoSnipeToken(tokenAddress) {
   try {
@@ -524,7 +505,7 @@ setInterval(async () => {
     console.error('Error in setInterval checkNewTokens:', error.message);
     bot.sendMessage(chatId, `❌ Error in periodic token check: ${error.message}`);
   }
-}, 10000);
+}, 300000); // 5 minutes
 
 app.get('/', (req, res) => res.send('Bot running!'));
 

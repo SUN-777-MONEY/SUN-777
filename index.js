@@ -12,9 +12,9 @@ try {
   extractTokenInfo = helperModule.extractTokenInfo;
   checkAgainstFilters = helperModule.checkAgainstFilters;
   formatTokenMessage = helperModule.formatTokenMessage;
-  console.log('Successfully imported functions from Helper.function.js:', { extractTokenInfo, checkAgainstFilters, formatTokenMessage });
+  console.log('Successfully imported functions from Helper.function.js at startup:', { extractTokenInfo, checkAgainstFilters, formatTokenMessage });
 } catch (error) {
-  console.error('Failed to import Helper.function.js:', error);
+  console.error('Failed to import Helper.function.js at startup:', error);
   process.exit(1); // Exit if import fails to avoid runtime errors
 }
 
@@ -39,8 +39,8 @@ const bot = new TelegramBot(token, { polling: false, request: { retryAfter: 21 }
 app.use(express.json());
 
 // Set Telegram webhook
-bot.setWebHook(`${webhookBaseUrl}/bot${token}`).then(() => {
-  console.log('Webhook set:', bot.getWebHookInfo());
+bot.setWebHook(`${webhookBaseUrl}/bot${token}`).then(info => {
+  console.log('Webhook set successfully:', info);
 }).catch(error => {
   console.error('Failed to set Telegram webhook:', error);
 });
@@ -63,6 +63,9 @@ const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 app.post('/webhook', async (req, res) => {
   try {
+    // Debug log to check module state at runtime
+    console.log('Checking module state in /webhook endpoint:', { extractTokenInfo, checkAgainstFilters, formatTokenMessage });
+
     const now = Date.now();
     if (now - lastReset > 60000) {
       eventCounter = 0;
@@ -123,7 +126,7 @@ app.post('/webhook', async (req, res) => {
 
       // Check if extractTokenInfo is defined
       if (typeof extractTokenInfo !== 'function') {
-        console.error('extractTokenInfo is not a function. Check Helper.function.js import.');
+        console.error('extractTokenInfo is not a function in /webhook. Current module state:', { extractTokenInfo, checkAgainstFilters, formatTokenMessage });
         throw new Error('Token check error: extractTokenInfo is not defined');
       }
 
@@ -171,6 +174,9 @@ app.post('/webhook', async (req, res) => {
 
 app.post('/test-webhook', async (req, res) => {
   try {
+    // Debug log to check module state at runtime
+    console.log('Checking module state in /test-webhook endpoint:', { extractTokenInfo, checkAgainstFilters, formatTokenMessage });
+
     const mockEvent = {
       type: 'TOKEN_MINT',
       tokenMint: 'TEST_TOKEN_ADDRESS',
@@ -182,7 +188,7 @@ app.post('/test-webhook', async (req, res) => {
 
     // Check if extractTokenInfo is defined
     if (typeof extractTokenInfo !== 'function') {
-      console.error('extractTokenInfo is not a function in test-webhook. Check Helper.function.js import.');
+      console.error('extractTokenInfo is not a function in /test-webhook. Current module state:', { extractTokenInfo, checkAgainstFilters, formatTokenMessage });
       throw new Error('Token check error: extractTokenInfo is not defined');
     }
 

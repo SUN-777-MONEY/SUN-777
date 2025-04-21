@@ -18,6 +18,23 @@ try {
   process.exit(1); // Exit if import fails to avoid runtime errors
 }
 
+// Add reloadHelperModule function to reload the module at runtime if needed
+const reloadHelperModule = () => {
+  try {
+    // Clear the module cache
+    delete require.cache[require.resolve('./Helper.function')];
+    // Reload the module
+    const helperModule = require('./Helper.function');
+    extractTokenInfo = helperModule.extractTokenInfo;
+    checkAgainstFilters = helperModule.checkAgainstFilters;
+    formatTokenMessage = helperModule.formatTokenMessage;
+    console.log('Successfully reloaded Helper.function.js:', { extractTokenInfo, checkAgainstFilters, formatTokenMessage });
+  } catch (error) {
+    console.error('Failed to reload Helper.function.js:', error);
+    throw error;
+  }
+};
+
 const app = express();
 const PORT = process.env.PORT || 10000;
 const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -65,6 +82,12 @@ app.post('/webhook', async (req, res) => {
   try {
     // Debug log to check module state at runtime
     console.log('Checking module state in /webhook endpoint:', { extractTokenInfo, checkAgainstFilters, formatTokenMessage });
+
+    // Reload module if extractTokenInfo is undefined
+    if (typeof extractTokenInfo !== 'function') {
+      console.warn('extractTokenInfo is undefined in /webhook, attempting to reload Helper.function.js');
+      reloadHelperModule();
+    }
 
     const now = Date.now();
     if (now - lastReset > 60000) {
@@ -124,12 +147,6 @@ app.post('/webhook', async (req, res) => {
         continue;
       }
 
-      // Check if extractTokenInfo is defined
-      if (typeof extractTokenInfo !== 'function') {
-        console.error('extractTokenInfo is not a function in /webhook. Current module state:', { extractTokenInfo, checkAgainstFilters, formatTokenMessage });
-        throw new Error('Token check error: extractTokenInfo is not defined');
-      }
-
       const tokenData = await extractTokenInfo(event);
       if (!tokenData) {
         console.log('No valid token data for:', tokenAddress);
@@ -177,6 +194,12 @@ app.post('/test-webhook', async (req, res) => {
     // Debug log to check module state at runtime
     console.log('Checking module state in /test-webhook endpoint:', { extractTokenInfo, checkAgainstFilters, formatTokenMessage });
 
+    // Reload module if extractTokenInfo is undefined
+    if (typeof extractTokenInfo !== 'function') {
+      console.warn('extractTokenInfo is undefined in /test-webhook, attempting to reload Helper.function.js');
+      reloadHelperModule();
+    }
+
     const mockEvent = {
       type: 'TOKEN_MINT',
       tokenMint: 'TEST_TOKEN_ADDRESS',
@@ -185,12 +208,6 @@ app.post('/test-webhook', async (req, res) => {
     };
     console.log('Received test webhook:', JSON.stringify(mockEvent, null, 2));
     bot.sendMessage(chatId, 'ℹ️ Received test webhook');
-
-    // Check if extractTokenInfo is defined
-    if (typeof extractTokenInfo !== 'function') {
-      console.error('extractTokenInfo is not a function in /test-webhook. Current module state:', { extractTokenInfo, checkAgainstFilters, formatTokenMessage });
-      throw new Error('Token check error: extractTokenInfo is not defined');
-    }
 
     const tokenData = await extractTokenInfo(mockEvent);
     if (tokenData) {

@@ -5,34 +5,22 @@ const { Connection, PublicKey, Transaction, SystemProgram, sendAndConfirmTransac
 const { getMint, TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 const { checkNewTokens } = require('./Alert.function');
 
-// Import Helper.function.js with debug logging
-let extractTokenInfo, checkAgainstFilters, formatTokenMessage;
-try {
-  const helperModule = require('./Helper.function');
-  extractTokenInfo = helperModule.extractTokenInfo;
-  checkAgainstFilters = helperModule.checkAgainstFilters;
-  formatTokenMessage = helperModule.formatTokenMessage;
-  console.log('Successfully imported functions from Helper.function.js at startup:', { extractTokenInfo, checkAgainstFilters, formatTokenMessage });
-} catch (error) {
-  console.error('Failed to import Helper.function.js at startup:', error);
-  process.exit(1); // Exit if import fails to avoid runtime errors
-}
-
-// Function to reload the module at runtime if needed
-const reloadHelperModule = () => {
+// Function to dynamically load Helper.function.js on each request
+const loadHelperModule = () => {
   try {
-    console.log('Attempting to reload Helper.function.js...');
-    // Clear the module cache
+    console.log('Dynamically loading Helper.function.js...');
+    // Clear the module cache to ensure fresh import
     delete require.cache[require.resolve('./Helper.function')];
-    // Reload the module
     const helperModule = require('./Helper.function');
-    extractTokenInfo = helperModule.extractTokenInfo;
-    checkAgainstFilters = helperModule.checkAgainstFilters;
-    formatTokenMessage = helperModule.formatTokenMessage;
-    console.log('Successfully reloaded Helper.function.js:', { extractTokenInfo, checkAgainstFilters, formatTokenMessage });
+    console.log('Successfully loaded Helper.function.js:', {
+      extractTokenInfo: typeof helperModule.extractTokenInfo,
+      checkAgainstFilters: typeof helperModule.checkAgainstFilters,
+      formatTokenMessage: typeof helperModule.formatTokenMessage
+    });
+    return helperModule;
   } catch (error) {
-    console.error('Failed to reload Helper.function.js:', error);
-    throw new Error('Module reload error: Failed to reload Helper.function.js');
+    console.error('Failed to load Helper.function.js:', error);
+    throw new Error('Module load error: Failed to load Helper.function.js');
   }
 };
 
@@ -81,27 +69,17 @@ const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 app.post('/webhook', async (req, res) => {
   try {
-    // Debug log to check module state at runtime
-    console.log('Checking module state in /webhook endpoint:', {
-      extractTokenInfo: typeof extractTokenInfo,
-      checkAgainstFilters: typeof checkAgainstFilters,
-      formatTokenMessage: typeof formatTokenMessage
-    });
+    // Dynamically load Helper.function.js for this request
+    const { extractTokenInfo, checkAgainstFilters, formatTokenMessage } = loadHelperModule();
 
-    // Reload module if extractTokenInfo is undefined
-    if (typeof extractTokenInfo !== 'function') {
-      console.warn('extractTokenInfo is undefined in /webhook, attempting to reload Helper.function.js');
-      reloadHelperModule();
-    }
-
-    // Final check after reload
-    if (typeof extractTokenInfo !== 'function') {
-      console.error('extractTokenInfo is still not a function after reload. Current module state:', {
+    // Ensure functions are defined
+    if (typeof extractTokenInfo !== 'function' || typeof checkAgainstFilters !== 'function' || typeof formatTokenMessage !== 'function') {
+      console.error('One or more functions are not defined after loading Helper.function.js:', {
         extractTokenInfo: typeof extractTokenInfo,
         checkAgainstFilters: typeof checkAgainstFilters,
         formatTokenMessage: typeof formatTokenMessage
       });
-      throw new Error('Token check error: extractTokenInfo is not defined even after reload');
+      throw new Error('Token check error: Helper functions are not defined');
     }
 
     const now = Date.now();
@@ -206,27 +184,17 @@ app.post('/webhook', async (req, res) => {
 
 app.post('/test-webhook', async (req, res) => {
   try {
-    // Debug log to check module state at runtime
-    console.log('Checking module state in /test-webhook endpoint:', {
-      extractTokenInfo: typeof extractTokenInfo,
-      checkAgainstFilters: typeof checkAgainstFilters,
-      formatTokenMessage: typeof formatTokenMessage
-    });
+    // Dynamically load Helper.function.js for this request
+    const { extractTokenInfo, checkAgainstFilters, formatTokenMessage } = loadHelperModule();
 
-    // Reload module if extractTokenInfo is undefined
-    if (typeof extractTokenInfo !== 'function') {
-      console.warn('extractTokenInfo is undefined in /test-webhook, attempting to reload Helper.function.js');
-      reloadHelperModule();
-    }
-
-    // Final check after reload
-    if (typeof extractTokenInfo !== 'function') {
-      console.error('extractTokenInfo is still not a function after reload. Current module state:', {
+    // Ensure functions are defined
+    if (typeof extractTokenInfo !== 'function' || typeof checkAgainstFilters !== 'function' || typeof formatTokenMessage !== 'function') {
+      console.error('One or more functions are not defined after loading Helper.function.js:', {
         extractTokenInfo: typeof extractTokenInfo,
         checkAgainstFilters: typeof checkAgainstFilters,
         formatTokenMessage: typeof formatTokenMessage
       });
-      throw new Error('Token check error: extractTokenInfo is not defined even after reload');
+      throw new Error('Token check error: Helper functions are not defined');
     }
 
     const mockEvent = {
@@ -257,6 +225,7 @@ app.post('/test-webhook', async (req, res) => {
 
 async function sendTokenAlert(chatId, tokenData) {
   if (!tokenData) return;
+  const { formatTokenMessage } = loadHelperModule(); // Dynamically load for this function as well
   const message = formatTokenMessage(tokenData);
   console.log('Sending message:', message);
   try {
@@ -540,8 +509,22 @@ bot.on('message', (msg) => {
   }
 });
 
-// Fixed the syntax error in setInterval
-setInterval(() => checkNewTokens(bot, chatId, PUMP_FUN_PROGRAM, filters), 10000);
+// Updated setInterval with error handling
+setInterval(async () => {
+  try {
+    console.log('Running periodic checkNewTokens...');
+    const { checkAgainstFilters } = loadHelperModule();
+    if (typeof checkAgainstFilters !== 'function') {
+      console.error('checkAgainstFilters is not a function in setInterval:', { checkAgainstFilters: typeof checkAgainstFilters });
+      throw new Error('Token check error: checkAgainstFilters is not defined');
+    }
+    await checkNewTokens(bot, chatId, PUMP_FUN_PROGRAM, filters, checkAgainstFilters);
+    console.log('checkNewTokens executed successfully');
+  } catch (error) {
+    console.error('Error in setInterval checkNewTokens:', error.message);
+    bot.sendMessage(chatId, `❌ Error in periodic token check: ${error.message}`);
+  }
+}, 10000);
 
 app.get('/', (req, res) => res.send('Bot running!'));
 
@@ -550,5 +533,4 @@ app.listen(PORT, () => {
   const heliusWebhookUrl = webhookBaseUrl.endsWith('/webhook') ? webhookBaseUrl : `${webhookBaseUrl}/webhook`;
   console.log('Helius Webhook URL:', heliusWebhookUrl);
   console.log('Starting Helius webhook and periodic monitoring...');
-  bot.sendMessage(chatId, '🚀 Bot started! Waiting for Pump.fun token alerts...');
-});
+  bot.sendMessage(chatId, '🚀 Bot started! Waiting for P

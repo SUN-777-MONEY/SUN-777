@@ -533,4 +533,5 @@ app.listen(PORT, () => {
   const heliusWebhookUrl = webhookBaseUrl.endsWith('/webhook') ? webhookBaseUrl : `${webhookBaseUrl}/webhook`;
   console.log('Helius Webhook URL:', heliusWebhookUrl);
   console.log('Starting Helius webhook and periodic monitoring...');
-  bot.sendMessage(chatId, '🚀 Bot started! Waiting for P
+  bot.sendMessage(chatId, '🚀 Bot started! Waiting for Pump.fun token alerts...');
+});

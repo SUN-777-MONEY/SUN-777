@@ -4,7 +4,19 @@ const TelegramBot = require('node-telegram-bot-api');
 const { Connection, PublicKey, Transaction, SystemProgram, sendAndConfirmTransaction, Keypair } = require('@solana/web3.js');
 const { getMint, TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 const { checkNewTokens } = require('./Alert.function');
-const { extractTokenInfo, checkAgainstFilters, formatTokenMessage } = require('./Helper.function');
+
+// Import Helper.function.js with debug logging
+let extractTokenInfo, checkAgainstFilters, formatTokenMessage;
+try {
+  const helperModule = require('./Helper.function');
+  extractTokenInfo = helperModule.extractTokenInfo;
+  checkAgainstFilters = helperModule.checkAgainstFilters;
+  formatTokenMessage = helperModule.formatTokenMessage;
+  console.log('Successfully imported functions from Helper.function.js:', { extractTokenInfo, checkAgainstFilters, formatTokenMessage });
+} catch (error) {
+  console.error('Failed to import Helper.function.js:', error);
+  process.exit(1); // Exit if import fails to avoid runtime errors
+}
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -13,6 +25,7 @@ const chatId = process.env.TELEGRAM_CHAT_ID || '-1002511600127';
 const webhookBaseUrl = process.env.WEBHOOK_URL?.replace(/\/$/, '');
 const connection = new Connection(`https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`, { commitment: 'confirmed' });
 
+// Validate environment variables
 if (!token || !webhookBaseUrl || !process.env.HELIUS_API_KEY || !process.env.PRIVATE_KEY) {
   console.error('Missing environment variables. Required: TELEGRAM_BOT_TOKEN, WEBHOOK_URL, HELIUS_API_KEY, PRIVATE_KEY');
   process.exit(1);
@@ -25,8 +38,11 @@ const bot = new TelegramBot(token, { polling: false, request: { retryAfter: 21 }
 
 app.use(express.json());
 
+// Set Telegram webhook
 bot.setWebHook(`${webhookBaseUrl}/bot${token}`).then(() => {
   console.log('Webhook set:', bot.getWebHookInfo());
+}).catch(error => {
+  console.error('Failed to set Telegram webhook:', error);
 });
 
 let filters = {
@@ -105,6 +121,12 @@ app.post('/webhook', async (req, res) => {
         continue;
       }
 
+      // Check if extractTokenInfo is defined
+      if (typeof extractTokenInfo !== 'function') {
+        console.error('extractTokenInfo is not a function. Check Helper.function.js import.');
+        throw new Error('Token check error: extractTokenInfo is not defined');
+      }
+
       const tokenData = await extractTokenInfo(event);
       if (!tokenData) {
         console.log('No valid token data for:', tokenAddress);
@@ -122,17 +144,7 @@ app.post('/webhook', async (req, res) => {
       const bypassFilters = process.env.BYPASS_FILTERS === 'true';
       if (bypassFilters || checkAgainstFilters(tokenData, filters)) {
         console.log('Token passed filters, adding to batch:', tokenData);
-        const message = `New Bonding Curve Meme Coin Alert!\n` +
-                        `Token Name: ${tokenData.name || 'N/A'}\n` +
-                        `Token Address: ${tokenData.address || 'N/A'}\n` +
-                        `Liquidity: ${tokenData.liquidity || 'N/A'}\n` +
-                        `Market Cap: ${tokenData.marketCap || 'N/A'}\n` +
-                        `Dev Holding: ${tokenData.devHolding || 'N/A'}%\n` +
-                        `Pool Supply: ${tokenData.poolSupply || 'N/A'}%\n` +
-                        `Launch Price: ${tokenData.launchPrice || 'N/A'} SOL\n` +
-                        `Mint Auth Revoked: ${tokenData.mintAuthRevoked ? 'Yes' : 'No'}\n` +
-                        `Freeze Auth Revoked: ${tokenData.freezeAuthRevoked ? 'Yes' : 'No'}\n` +
-                        `Chart: https://dexscreener.com/solana/${tokenData.address || ''}\n\n`;
+        const message = formatTokenMessage(tokenData);
         batchMessage += message;
 
         if (process.env.AUTO_SNIPE === 'true') {
@@ -152,12 +164,11 @@ app.post('/webhook', async (req, res) => {
 
     return res.status(200).send('OK');
   } catch (error) {
-    console.error('Webhook error:', error);
+    console.error('Webhook error:', error.message);
     return res.status(500).send('Internal Server Error');
   }
 });
 
-// Rest of your code (test-webhook, sendTokenAlert, autoSnipeToken, bot logic, etc.) remains unchanged
 app.post('/test-webhook', async (req, res) => {
   try {
     const mockEvent = {
@@ -168,6 +179,12 @@ app.post('/test-webhook', async (req, res) => {
     };
     console.log('Received test webhook:', JSON.stringify(mockEvent, null, 2));
     bot.sendMessage(chatId, 'ℹ️ Received test webhook');
+
+    // Check if extractTokenInfo is defined
+    if (typeof extractTokenInfo !== 'function') {
+      console.error('extractTokenInfo is not a function in test-webhook. Check Helper.function.js import.');
+      throw new Error('Token check error: extractTokenInfo is not defined');
+    }
 
     const tokenData = await extractTokenInfo(mockEvent);
     if (tokenData) {
@@ -180,7 +197,7 @@ app.post('/test-webhook', async (req, res) => {
 
     return res.status(200).send('Test webhook processed');
   } catch (error) {
-    console.error('Test webhook error:', error);
+    console.error('Test webhook error:', error.message);
     bot.sendMessage(chatId, `❌ Test webhook error: ${error.message}`);
     return res.status(500).send('Test webhook failed');
   }
@@ -188,17 +205,7 @@ app.post('/test-webhook', async (req, res) => {
 
 async function sendTokenAlert(chatId, tokenData) {
   if (!tokenData) return;
-  const message = `New Bonding Curve Meme Coin Alert!\n` +
-                  `Token Name: ${tokenData.name || 'N/A'}\n` +
-                  `Token Address: ${tokenData.address || 'N/A'}\n` +
-                  `Liquidity: ${tokenData.liquidity || 'N/A'}\n` +
-                  `Market Cap: ${tokenData.marketCap || 'N/A'}\n` +
-                  `Dev Holding: ${tokenData.devHolding || 'N/A'}%\n` +
-                  `Pool Supply: ${tokenData.poolSupply || 'N/A'}%\n` +
-                  `Launch Price: ${tokenData.launchPrice || 'N/A'} SOL\n` +
-                  `Mint Auth Revoked: ${tokenData.mintAuthRevoked ? 'Yes' : 'No'}\n` +
-                  `Freeze Auth Revoked: ${tokenData.freezeAuthRevoked ? 'Yes' : 'No'}\n` +
-                  `Chart: https://dexscreener.com/solana/${tokenData.address || ''}`;
+  const message = formatTokenMessage(tokenData);
   console.log('Sending message:', message);
   try {
     await bot.sendMessage(chatId, message);
@@ -226,7 +233,7 @@ async function autoSnipeToken(tokenAddress) {
 
     bot.sendMessage(chatId, `✅ Bought token ${tokenAddress} for ${amountToBuy} SOL! Signature: ${signature}`);
   } catch (error) {
-    console.error('Error auto-sniping token:', error);
+    console.error('Error auto-sniping token:', error.message);
     bot.sendMessage(chatId, `❌ Failed to buy token ${tokenAddress}: ${error.message}`);
   }
 }
@@ -251,6 +258,7 @@ bot.onText(/\/start/, (msg) => {
   });
 });
 
+// Rest of your bot logic (callback_query, message handling) remains unchanged
 bot.on('callback_query', (callbackQuery) => {
   const msg = callbackQuery.message;
   const data = callbackQuery.data;

@@ -18,7 +18,7 @@ try {
   process.exit(1); // Exit if import fails to avoid runtime errors
 }
 
-// Add reloadHelperModule function to reload the module at runtime if needed
+// Function to reload the module at runtime if needed
 const reloadHelperModule = () => {
   try {
     // Clear the module cache
@@ -87,6 +87,12 @@ app.post('/webhook', async (req, res) => {
     if (typeof extractTokenInfo !== 'function') {
       console.warn('extractTokenInfo is undefined in /webhook, attempting to reload Helper.function.js');
       reloadHelperModule();
+    }
+
+    // Ensure extractTokenInfo is defined after reload
+    if (typeof extractTokenInfo !== 'function') {
+      console.error('extractTokenInfo is still not a function after reload. Current module state:', { extractTokenInfo, checkAgainstFilters, formatTokenMessage });
+      throw new Error('Token check error: extractTokenInfo is not defined even after reload');
     }
 
     const now = Date.now();
@@ -198,6 +204,12 @@ app.post('/test-webhook', async (req, res) => {
     if (typeof extractTokenInfo !== 'function') {
       console.warn('extractTokenInfo is undefined in /test-webhook, attempting to reload Helper.function.js');
       reloadHelperModule();
+    }
+
+    // Ensure extractTokenInfo is defined after reload
+    if (typeof extractTokenInfo !== 'function') {
+      console.error('extractTokenInfo is still not a function after reload. Current module state:', { extractTokenInfo, checkAgainstFilters, formatTokenMessage });
+      throw new Error('Token check error: extractTokenInfo is not defined even after reload');
     }
 
     const mockEvent = {
@@ -401,7 +413,7 @@ bot.on('callback_query', (callbackQuery) => {
 
     case 'edit_launchprice':
       userStates[chatId] = { editing: 'launchprice' };
-      bot.sendMessage(chatId, '✏️ Edit Launch Price\nPlease send the new range (e.g., "0.0000000022-0.0000000058" or "0.0000000022 0.0000000058")', {
+      bot.sendMessage(chatId, '✏️ Edit Launch Price\nPlease send the new range (e.g., "0. parallelism0000000022-0.0000000058" or "0.0000000022 0.0000000058")', {
         reply_markup: {
           inline_keyboard: [
             [{ text: '⬅️ Back', callback_data: 'filters' }]

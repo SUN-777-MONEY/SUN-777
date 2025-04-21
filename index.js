@@ -540,4 +540,15 @@ bot.on('message', (msg) => {
   }
 });
 
-setInterval(() => checkNewTokens(bot, chatId, PUMP_F
+// Fixed the syntax error in setInterval
+setInterval(() => checkNewTokens(bot, chatId, PUMP_FUN_PROGRAM, filters), 10000);
+
+app.get('/', (req, res) => res.send('Bot running!'));
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  const heliusWebhookUrl = webhookBaseUrl.endsWith('/webhook') ? webhookBaseUrl : `${webhookBaseUrl}/webhook`;
+  console.log('Helius Webhook URL:', heliusWebhookUrl);
+  console.log('Starting Helius webhook and periodic monitoring...');
+  bot.sendMessage(chatId, '🚀 Bot started! Waiting for Pump.fun token alerts...');
+});
